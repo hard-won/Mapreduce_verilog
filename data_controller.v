@@ -1,0 +1,150 @@
+   `timescale 1ns / 1ps
+ //////////////////////////////////////////////////////////////////////////////////
+ // Company: 
+ // Engineer: Ehsan Ghasemi
+ // 
+ // Create Date: 03/17/2015 15:49:33 PM
+ // Design Name: Ehsan Ghasemi
+ // Module Name: data controller
+ // Project Name: 
+ // Target Devices: 
+ // Tool Versions: 
+ // Description: 
+ // 
+ // Dependencies: 
+ // 
+ // Revision:
+ // Revision 0.01 - File Created
+ // Additional Comments:
+ // 
+ //    
+ // Assumptions:
+ //  This module connects fifo to the arbiter
+ //  and based on the control signal it gets 
+ //  grants the request of the mappers and 
+ //  also controls the data_in fifo to feed in
+ //  the next data point to the mappers
+ //  - The request is granted the same cycle as
+ //    the fifo_re is asserted
+ // Revision History:
+ //  Apr 25:
+ //    In order to reduce the high fan-out of the data_points from Input converter,
+ //    The value of the data point read from the fifo is registered. This will allow
+ //    the synthesis tool to distribute the fan-out signal to make timing. Therefore,
+ //    the grant signal is also registred to be synched with when the data arrives
+ //    at the mappers
+ //  May 12:
+ //    The arbiter in this module has changed to have one cycle latency and register the request
+ //    in order to improve operating frequency of the whole design as the number of mappers increase.
+ //  June 28:
+ //    In order to meet timing, the output from the arbiter to the fifo is registred.
+  //////////////////////////////////////////////////////////////////////////////////
+module data_controller #(
+		 parameter integer NUM_OF_MAPPERS = 4,
+		 parameter integer C_LOG_FIFO_DEPTH = 3,
+		 parameter integer C_FIFO_WIDTH = NUM_OF_MAPPERS
+			 
+		 )(
+		   clock,
+		   reset_n,
+		   fifo_re, // this specifies that there is an idle mapper and an available data point
+		   request,
+		   grant,  // the request is granted. This connects to the START port of the mappers
+		   queued, // specify the request is queued
+		   fifo_empty
+
+		   );
+
+
+  
+   // INPUTS
+   input clock,reset_n; // enable is when !fifo_full
+   input [NUM_OF_MAPPERS-1:0] request;
+   input 		      fifo_re;
+   
+   //OUTPUTS
+   output reg [NUM_OF_MAPPERS-1:0]     grant;
+   output [NUM_OF_MAPPERS-1:0] 	       queued;
+   output 			       fifo_empty; 
+   
+
+   //INTERNAL WIRES
+
+   wire 			   fifo_full;
+   wire 			   fifo_we;
+   wire [NUM_OF_MAPPERS-1:0] 	   fifo_data_in; // grant_internal
+   wire [NUM_OF_MAPPERS-1:0] 	   fifo_data_out; 
+   wire [NUM_OF_MAPPERS-1:0] 	   grant_early;
+
+   reg [NUM_OF_MAPPERS-1:0] 	   fifo_we_reg;
+   reg [NUM_OF_MAPPERS-1:0] 	   fifo_data_in_reg;
+ 	   
+   // FIFO DEFINITION  
+   fifo_dc # (
+	   .C_WIDTH(C_FIFO_WIDTH),
+	   .C_LOG_FIFO_DEPTH(C_LOG_FIFO_DEPTH)
+	   
+	   ) ff( 
+		 .clk(clock), 
+		 .rst(!reset_n), 
+		 .buf_in(fifo_data_in_reg), 
+		 .buf_out(grant_early/*fifo_data_out*/), 
+		 .wr_en(fifo_we_reg), 
+		 .rd_en(fifo_re), 
+		 .buf_empty(fifo_empty), 
+		 .buf_full(fifo_full), 
+		 .fifo_counter() 
+		 );
+   
+
+  // ARBITER INSTANTIATION 	
+  /* arbiter #(
+	     .NUM_OF_MAPPERS (NUM_OF_MAPPERS)
+	     ) arb (
+		    .clock(clock),
+		    .reset_n(reset_n),
+		    .enable(!fifo_full),
+		    .request(request),
+		    .grant(fifo_data_in),
+		    .grant_valid(fifo_we)
+		   );
+   */
+
+    arbiter #(
+	     .NUM_OF_MAPPERS (NUM_OF_MAPPERS)
+	     ) arb (
+		    .clock(clock),
+		    .reset_n(reset_n),
+		    .enable(!fifo_full && request!=0),
+		    .request(request),
+		    .grant(fifo_data_in),
+		    .grant_valid(fifo_we)
+		   );
+   
+   always @(posedge clock )
+     begin
+        if (!reset_n)
+          grant <= 0;
+	else
+	  grant <= grant_early;
+     end
+
+   always @(posedge clock )
+     begin
+        if (!reset_n)
+	  begin
+             fifo_we_reg  <= 0;
+	     fifo_data_in_reg <= 0;
+	  end
+	else
+	  begin
+	     fifo_we_reg  <= fifo_we;
+	     fifo_data_in_reg <= fifo_data_in;
+	  end
+     end
+   
+   assign queued = (fifo_we) ? fifo_data_in : 0; // if the request from the mapper is queued
+   //assign grant = (fifo_re) ? fifo_data_out : 0; // if the request from the mapper is being granted
+   
+endmodule // arbiter
+

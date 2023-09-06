@@ -1,0 +1,301 @@
+
+`timescale 1ns / 1ps
+//////////////////////////////////////////////////////////////////////////////////
+// Company: 
+// Engineer: 
+// 
+// Create Date: 03/05/2015 06:51:45 PM
+// Design Name: 
+// Module Name: map
+// Project Name: 
+// Target Devices: 
+// Tool Versions: 
+// Description: 
+// 
+// Dependencies: 
+// 
+// Revision:
+// Revision 0.01 - File Created
+// Additional Comments:
+// Revision History:
+// Apr 22:
+//   fifo_val_data_out = valu_data_in which makes a long routing wire between
+//   the fifo_in and fifo_out. To reduce the routing delay, fifo_val_data_out = data_in
+//   and fifo_val_valid_out = grant_delay
+//   
+//////////////////////////////////////////////////////////////////////////////////
+
+
+module map #(
+             parameter integer DIMENSION = 2,
+             parameter integer PRECISION = 16,
+             parameter integer DATA_WIDTH = PRECISION*DIMENSION,
+             parameter integer CENTRE_WIDTH = 16,
+             parameter integer K = 4,
+             parameter integer ADDR_BITS = 2
+
+
+             )
+   (
+    clock,
+    reset_n,
+    //MEM WIRTE INPUT SIGNALS
+    write_addr_in,
+    write_data_in,
+    we_in,
+    write_done_in,
+    
+    //MEM WIRTE OUTPUT SIGNALS
+    write_addr_out,
+    write_data_out,
+    we_out,
+    write_done_out,
+
+    //CONTROL SIGNALS FROM DATA CONTROLLER
+    grant,
+    request,
+    queued,
+   // DATA INPUT
+    value_data_in,
+    
+    // CONTROL SIGNALS FROM FIFOS
+    fifo_val_full,
+    fifo_val_data_out,
+    fifo_val_valid_out,
+    
+    fifo_key_full,
+    fifo_key_data_out,
+    fifo_key_valid_out
+ 
+    );
+   
+ 
+   
+   input 		       clock;
+   input 		       reset_n;
+   
+   //MEM WRITE SIGNALS
+   input [ADDR_BITS-1:0]       write_addr_in;
+   input [(DIMENSION*CENTRE_WIDTH)-1:0] write_data_in;
+   input 				we_in; 
+   input 				write_done_in;
+
+   // MEM WRITE DEALY SIGNALS
+   reg [ADDR_BITS-1:0] 			write_addr_reg;
+   reg [(DIMENSION*CENTRE_WIDTH)-1:0] 	write_data_reg;
+   reg 					we_reg;
+   reg 					write_done_reg;     
+   
+   // MEM WIRTE OUTPUT SIGNALS
+   output [ADDR_BITS-1:0] 		write_addr_out;
+   output [(DIMENSION*CENTRE_WIDTH)-1:0] write_data_out;
+   output 				 we_out;
+   output 				 write_done_out;
+
+   // WIRES BETWEEN MAPPER AND MEMORY
+   wire [ADDR_BITS-1 :0] 		 mapper_read_addr;
+   wire 				 mapper_read_ce;
+   wire [(DIMENSION*PRECISION)-1:0] 	 mapper_read_data;
+   
+   //CONTROL SIGNALS FROM DATA CONTROLLER
+   input 				 grant;
+   input 				 queued;
+   output reg 				 request;
+   input [(DIMENSION*PRECISION)-1:0] 	 value_data_in;
+ 	 
+   
+   // CONTROL SIGNALS FROM FIFOS
+   input 				 fifo_val_full;
+   output [(DIMENSION*PRECISION)-1 :0] 	 fifo_val_data_out;
+   output 				 fifo_val_valid_out;
+    
+   input 				 fifo_key_full;
+   output [15 :0] 	 fifo_key_data_out;
+   output 				 fifo_key_valid_out;
+
+
+   // INTERNAL PARAMETERS FOR STATE MACHINE
+
+   localparam [1:0] REQUEST=2'b00, QUEUED=2'b01, RUNNING = 2'b10;
+   
+   reg [1:0] 				 current_state, next_state;
+   reg [(DIMENSION*PRECISION)-1:0] data_in;
+   // INTERNAL WIRES
+   wire 				 request_cond;
+   wire 				 map_done_out;
+   wire 				 map_idle_out;
+   reg 					 grant_delay; // delay grant signal as input to fifo_val_valid_out
+   
+
+// creating a carry chain effect between the mappers
+   // to update their memories 
+   always @(posedge clock)
+     begin
+        
+        if(!reset_n)
+          begin
+             write_addr_reg <= {ADDR_BITS{1'b0}};
+             write_data_reg <= { DIMENSION*CENTRE_WIDTH{1'b0}};
+             we_reg         <= 1'b0;
+             write_done_reg <= 1'b0;
+             
+          end  
+        else
+          begin
+             write_addr_reg <= write_addr_in;
+             write_data_reg <= write_data_in;
+             we_reg         <= we_in;
+             write_done_reg <= write_done_in;
+          end
+     end
+
+   
+   bram_mapper # (
+           .C_WIDTH(DIMENSION*PRECISION),
+	   .C_LOG_DEPTH(ADDR_BITS)
+           ) ram (
+		  .i_clk(clock),
+		  .i_waddr(write_addr_reg),
+		  .i_wdata(write_data_reg),
+		  .i_wen(we_reg),
+		  .i_raddr(mapper_read_addr),
+		  .o_rdata( mapper_read_data),
+		  .i_ce(mapper_read_ce)
+		  );
+   
+   mapper m(
+           .ap_clk(clock),
+           .ap_rst(!reset_n),
+           .ap_start(grant),
+           .ap_done(map_done_out),
+           .ap_idle(map_idle_out),
+           .ap_ready(),
+           .pt(data_in),
+           .centres_address0(mapper_read_addr),
+           .centres_ce0(mapper_read_ce),
+           .centres_q0( mapper_read_data),
+           .ap_return(fifo_key_data_out)
+	   );
+
+
+
+ 
+
+
+   ///***** FSM *****///
+   
+ // COMBINATIONAL LOGIC FOR NEXT STATE
+   always @(*)
+     begin
+	case(current_state)
+	  REQUEST:
+	    begin
+	       if (queued)
+	         next_state = QUEUED ;
+	       else 
+		 next_state = REQUEST;
+	    end
+	  QUEUED:
+	    begin
+	       if (grant)
+		 next_state = RUNNING;
+	       else
+		 next_state = QUEUED;
+	    end
+	  RUNNING:
+	    begin
+	       if (map_done_out)
+		 next_state = REQUEST;
+	       else
+		 next_state = RUNNING;
+	    end
+	  default:
+	    begin
+	       next_state = REQUEST;
+	    end
+	endcase // case (current_state)
+
+     end // always @ (*)
+
+
+
+   // STATE TRANSITION
+   always @(posedge clock)
+     begin
+	if (!reset_n)
+	  current_state <= REQUEST;	
+	else
+	  current_state <= next_state;
+     end
+
+   // the mapper should be idle and there should be space
+   // left in the two output fifo in order to process
+   // a new value and send idle request
+   assign request_condition = map_idle_out && !(fifo_key_full || fifo_val_full);
+   
+
+   reg data_in_valid;
+   
+   // COMBINATIONAL LOGIC FOR OUTPUT
+   always @(*)
+   begin
+      request = 1'b0;
+      data_in_valid = 1'b0;
+      case (current_state)
+	REQUEST:
+	  begin
+	     if (request_condition)
+	      request = 1'b1;
+	  end
+	QUEUED:
+	  begin
+	     if (grant) // map request granted
+	       data_in_valid = 1'b1; // data_in register enable
+	  end
+      endcase // case (current_state)
+      
+   end // always @ (*)
+
+
+
+
+   // REGISTER THE DATA IN VALUE
+   always @(posedge clock)
+     begin
+	if (!reset_n)
+	  data_in <= 0;
+	else if (data_in_valid)
+	  data_in <= value_data_in;
+	else
+	  data_in <= data_in;
+     end
+  
+   // REGISTER THE DATA IN VALUE
+   always @(posedge clock)
+     begin
+	if (!reset_n)
+	  grant_delay <= 0;
+	else 
+	  grant_delay <= grant;
+	
+     end
+   
+   
+   
+   // OUTPUTS FOR CREATING CARRY CHAIN
+   // TO UPDATE THE MEMORIES OF ALL THE MAPPER
+   assign write_addr_out = write_addr_reg;
+   assign write_data_out = write_data_reg;
+   assign we_out = we_reg;
+   assign write_done_out = write_done_reg;
+
+   // FIFO KEY OUTPUT
+   assign fifo_key_valid_out = map_done_out;
+
+
+   // FIFO VALUE OUTPUT
+   assign fifo_val_data_out = data_in;
+   assign fifo_val_valid_out = grant_delay;
+   
+   
+endmodule

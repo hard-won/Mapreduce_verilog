@@ -1,0 +1,324 @@
+`timescale 1ns / 1ps
+//////////////////////////////////////////////////////////////////////////////////
+// Company: 
+// Engineer: 
+// 
+// Create Date: 03/05/2015 02:09:59 PM
+// Design Name: 
+// Module Name: Scheduler
+// Project Name: 
+// Target Devices: 
+// Tool Versions: 
+// Description: 
+// 
+// Dependencies: 
+// 
+// Revision:
+// Revision 0.01 - File Created
+// Additional Comments:
+// 
+//////////////////////////////////////////////////////////////////////////////////
+
+
+module Scheduler #(
+		   parameter integer DIMENSION = 4,
+		   parameter integer PRECISION = 16,
+		   parameter integer DATA_WIDTH = PRECISION*DIMENSION,
+		   parameter integer K = 10,
+		   parameter integer NUM_OF_MAPPERS = 4,
+		   parameter integer NUM_OF_REDUCERS = 8,
+		   parameter integer ADDR_BITS = 4,
+		   parameter integer ITERATIONS = 2
+		   )
+   (
+    clk,
+    reset_n,
+    // idle,
+    //  ready,
+    //    read_next,
+
+    S_AXIS_TVALID,
+    S_AXIS_TLAST,
+    S_AXIS_TREADY,
+   
+    o_init_mem,
+    o_map,
+    i_mem_update_done,
+    i_mem_map_done,
+  //  i_mem_update_ready,
+    o_mem_update_valid,
+   
+
+    i_ic_ready,
+    o_ic_valid, 
+    o_ic_tlast,
+
+    o_ready, // ready for the next iteration
+    //  start,
+    i_sum_accum_done,
+    o_sum_accum_reset,
+
+    o_write_back_start,
+    i_write_back_done
+
+    );
+   
+   
+   parameter [2:0] IDLE=3'b000, INIT_MEM_A=3'b001, INIT_MEM_B=3'b010, MAP=3'b011,MEM_UPDATE_A=3'b100, MEM_UPDATE_B = 3'b101, ACK = 3'b110, COLLECT = 3'b111;
+   
+   
+   input 			     clk;
+   input 			     reset_n;
+   // input  start;
+   //input read_next;
+   
+   //output reg idle;//NO COMPUTATION IS BEING DONE 
+   // output reg  ready;//MAPPER READY TO ACCEPT NEW VALUE
+   input 			     S_AXIS_TVALID;  // indicating new valid data is available ( FOR NOW USED AS STARTING SIGNAL)
+   input 			     S_AXIS_TLAST; // the last valid data input
+   output reg 			     S_AXIS_TREADY;
+   //output reg [ADDR_BITS-1:0] write_addr;
+   
+   // CONTROL SIGNALS FOR MEM_UPDATE BLOCK
+   output reg 			     o_mem_update_valid; // start the memory update stage
+  // input 			     i_mem_update_ready;
+   input 			     i_mem_update_done; // asserted when the memory is updated
+   input 			     i_mem_map_done; // indicating when the memory in the mappers are finished updating
+   output reg 			     o_init_mem; // for initializing the memory
+   output reg 			     o_map; // indicate we're in the map stage
+   
+   
+   output reg 			     o_ic_valid; // valid output to input_converter
+   input 			     i_ic_ready; // ready input from input_coverter.v
+   output reg 			     o_ic_tlast;
+   
+   output reg 			     o_ready; // ready to start the next iteration
+   
+   input 			     i_sum_accum_done;
+   
+   output reg 			     o_sum_accum_reset;
+   
+   
+   input 			     i_write_back_done;
+   output reg 			     o_write_back_start;
+   
+   // combinational logic to find next state
+   reg [2:0] 			     next_state,current_state;
+   
+   reg [8:0] 			     it;
+   
+   // NEXT_STATE LOGIC
+   always @ (*/*asd*/)
+     begin
+        
+	case (current_state)
+	  IDLE:
+	    begin
+	       //next_state = IDLE;
+	       if (S_AXIS_TVALID)
+		 next_state = INIT_MEM_A;
+		 //next_state = MAP;
+	       
+	       else
+		 next_state = IDLE;
+	       
+	       
+	       /*
+		if (S_AXIS_TVALID)
+		next_state = INIT_MEM_A;
+		else
+		next_state = IDLE;
+		*/
+	    end
+	  INIT_MEM_A:
+	    begin
+               if (i_mem_update_done)
+		 next_state = INIT_MEM_B;
+               else
+		 next_state = INIT_MEM_A;
+	    end
+	  INIT_MEM_B:
+	    begin
+               if(i_mem_map_done)
+		 next_state = MAP;
+               else
+		 next_state = INIT_MEM_B;
+	    end
+	  MAP:
+	    begin
+	       
+	       if (i_sum_accum_done)
+		 next_state = COLLECT; //MEM_UPDATE_A;
+	       else
+		 next_state = MAP;
+	       
+               // next_state = MEM_UPDATE_A;
+	    end
+	  MEM_UPDATE_A:
+	    begin
+	       if (i_mem_update_done)
+	         next_state = MEM_UPDATE_B;
+	       else
+	         next_state = MEM_UPDATE_A;
+	       
+	    end
+	  MEM_UPDATE_B:
+	    begin
+	       if (i_mem_map_done)
+		 begin
+	            if (it < ITERATIONS-1)
+		      next_state = ACK; // wait till receive acknowledgement for the ready signal
+		    else
+	              next_state = COLLECT;
+		 end
+	       else
+	         next_state = MEM_UPDATE_B;
+	       
+	    end // case: MEM_UPDATE_B
+	  ACK:
+	    begin
+	       if (S_AXIS_TVALID)
+		 next_state = MAP;
+	       else
+		 next_state = ACK;
+	       
+	    end
+	  
+	  
+	  COLLECT:
+	    begin
+	       if (i_write_back_done)
+		 next_state = IDLE;
+	       else
+		 next_state = COLLECT;
+	       
+	       //next_state = IDLE;
+	    end
+	  default:
+            next_state = MAP;
+	  
+	endcase
+        
+	
+     end
+   
+   
+   
+   
+   // sequential circuit to change the state
+   
+   // STATE UPDATE
+   always @ (posedge clk)
+     begin
+	if (!reset_n)
+          current_state <= IDLE;
+	else
+          current_state <= next_state;
+     end
+   
+   // OUTPUT LOGIC
+   always @ (*/*asd*/)
+     begin
+	//idle = 1'b0;
+	S_AXIS_TREADY = 1'b0;
+	o_mem_update_valid = 1'b0;
+	o_init_mem = 1'b0;
+	o_ic_valid = 1'b0;
+	o_ic_tlast = 1'b0;
+	o_sum_accum_reset = 1'b0;
+	o_ready = 1'b0;
+	o_write_back_start = 1'b0;
+	o_map = 1'b0;
+	case (current_state)
+	  IDLE:
+	    begin    
+	       //idle = 1'b1;
+	    end
+	  INIT_MEM_A:
+	    begin
+	       //if (!i_mem_update_done)
+		 o_init_mem = 1'b1;
+	       
+	       if(S_AXIS_TVALID) 
+		 o_ic_valid = 1'b1; /**** 2 CYCLE LATENCY BECAUSE THE INPUT_CONVERTER FIRST WAIT
+				     FOR THE VALID SIGNAL BEFORE ASSERTS THE READY SIGNAL AND HERE 
+				     WE FIRST CHECK FOR THE READY SIGNAL TO OUTPUT A READY SIGNAL ***/
+	       if(i_ic_ready == 1'b1)
+		 S_AXIS_TREADY = 1'b1;
+	       if (S_AXIS_TLAST)
+		 o_ic_tlast = 1'b1;
+	       /*
+	       if (S_AXIS_TVALID)
+		 o_mem_update_valid = 1'b1;
+	       if (i_mem_update_ready)
+		 S_AXIS_TREADY = 1'b1;  
+		*/
+	    end
+	  
+	  INIT_MEM_B:
+	    begin
+	       //o_init_mem = 1'b1;
+	    end
+	  MAP:
+	    begin
+	       o_map = 1'b1;
+
+	       if(S_AXIS_TVALID) 
+		 o_ic_valid = 1'b1; /**** 2 CYCLE LATENCY BECAUSE THE INPUT_CONVERTER FIRST WAIT
+				     FOR THE VALID SIGNAL BEFORE ASSERTS THE READY SIGNAL AND HERE 
+				     WE FIRST CHECK FOR THE READY SIGNAL TO OUTPUT A READY SIGNAL ***/
+	       if(i_ic_ready == 1'b1)
+		 S_AXIS_TREADY = 1'b1;
+	       if (S_AXIS_TLAST)
+		 o_ic_tlast = 1'b1;
+	       /** BUG FIXED **/
+	       if (i_sum_accum_done)
+		 begin
+		    o_mem_update_valid = 1'b1;
+		    o_sum_accum_reset = 1'b1;
+		 end
+	    end
+	  MEM_UPDATE_A:
+	    begin
+	       if (i_sum_accum_done)
+		 o_sum_accum_reset = 1'b1;
+	       // merge signal
+	       o_mem_update_valid = 1'b1;
+	    end
+	  MEM_UPDATE_B:
+	    begin 
+	       // no update
+	    end
+	  ACK:
+	    begin
+	       o_ready = 1'b1;
+	    end
+	  COLLECT:
+	    begin
+	       o_write_back_start = 1'b1;
+	       
+	       // no update
+	    end
+	  default:
+	    begin
+	    end
+	endcase
+     end
+   
+   
+   always @ (posedge clk)
+     begin
+	if (!reset_n || current_state == IDLE)
+	  it <= 9'b00;
+	else if (current_state == MEM_UPDATE_B && i_mem_map_done)
+	  it <= it + 1;
+	else
+	  it <= it;
+	
+
+
+	
+     end
+   
+   
+endmodule

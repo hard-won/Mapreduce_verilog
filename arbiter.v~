@@ -1,0 +1,260 @@
+   `timescale 1ns / 1ps
+ //////////////////////////////////////////////////////////////////////////////////
+ // Company: 
+ // Engineer: Ehsan Ghasemi
+ // 
+ // Create Date: 03/16/2015 14:35:43 PM
+ // Design Name: Ehsan Ghasemi
+ // Module Name: arbiter
+ // Project Name: 
+ // Target Devices: 
+ // Tool Versions: 
+ // Description: 
+ // 
+ // Dependencies: 
+ // 
+ // Revision:
+ // Revision 0.01 - File Created
+ // Additional Comments:
+ //  Grant signal is prduced wit one cycle latency
+ //  Valid signal is assrted the same time as the grant signal
+ //    
+ // Assumptions:
+ //  This module is connected to a FIFO
+ //   
+ // Change log:
+ //  - March 25th 2015
+ //    Originally this core was combinational
+ //    However, since it would produce the first valid signal
+ //    based on the value read before the core required, it introduce some problems.
+ //    I added a state machine to read the first value when expected and produce
+ //    the valid signal at the right time.
+ //////////////////////////////////////////////////////////////////////////////////
+module arbiter #(
+     parameter integer NUM_OF_MAPPERS = 4
+     
+
+
+     )(
+       clock,
+       reset_n,
+       enable,
+       request,
+       grant,
+       grant_valid
+
+
+       );
+
+  // FUNCTION THAT OUTPUTS LOG2 OF THE INPUT
+   function integer clogb2 (input integer bit_depth);
+      begin
+         for(clogb2=0; bit_depth>0; clogb2=clogb2+1)
+           bit_depth = bit_depth >> 1;
+      end
+   endfunction
+
+
+   localparam bit_width = clogb2(NUM_OF_MAPPERS);
+   localparam IDLE = 1'b0, VALID = 1'b1;
+   reg current_state, next_state;
+   
+   
+   
+   // INPUTS
+   input clock,reset_n,enable; // enable is when !fifo_full
+   input [NUM_OF_MAPPERS-1:0] request;
+   
+   //OUTPUTS
+   output reg [NUM_OF_MAPPERS-1:0]     grant;
+   output      reg           grant_valid; // will be connected to fifo_we
+   
+   
+   //INTERNAL SIGNALS
+   wire [(2*NUM_OF_MAPPERS)-1:0]   req_rotate; // wires to rotate the signals to pass the the priority que
+   wire [(2*NUM_OF_MAPPERS)-1:0]   req_rotate_back; // wires to rotate the signals back from priority que
+   //wire [NUM_OF_MAPPERS-1:0]  req_wires;
+   
+   reg [bit_width-1:0]       counter; // counter to keep track of the next mapper with highest priority
+   wire[NUM_OF_MAPPERS-1:0]     que_out; // output of the priority que
+   
+   assign req_rotate = {request,request} >> counter; // to rotate the data double the width and shift
+   assign req_rotate_back = {que_out,que_out} << counter; // to rotate the data double the width, and shift 
+  
+  
+  
+  
+  
+  
+  // COMBINATIONAL LOGIC FOR NEXT STATE
+     always @(*)
+       begin
+    case(current_state)
+      IDLE:
+        begin
+           if (enable && request != 0)
+             next_state = VALID ;
+           else 
+             next_state = IDLE;
+        end
+      VALID:
+        begin
+           if (!enable || request == 0)
+              next_state = IDLE;
+           else
+              next_state = VALID;
+        end
+      default:
+        begin
+           next_state = IDLE;
+        end
+    endcase // case (current_state)
+  
+       end // always @ (*)
+  
+  // STATE TRANSITION
+  always @(posedge clock)
+    begin
+    if (!reset_n)
+      current_state <= IDLE;	
+    else
+      current_state <= next_state;
+    end  
+  
+  
+  
+  
+  always @(*)
+      begin
+        grant = 0;
+        grant_valid = 0;
+        case(current_state)
+          IDLE:
+            begin
+            
+            end
+          VALID:
+            begin
+              grant = req_rotate_back[(2*NUM_OF_MAPPERS)-1-:NUM_OF_MAPPERS];
+              if (!enable || request == 0)
+                grant_valid = 0;
+              else
+                grant_valid = 1;
+            end
+        endcase // case (current_state)
+      
+      end // always @ (*)
+  
+  // PRIORITY QUE INSTATIATION
+   priority_que #(
+      .NUM_OF_MAPPERS(NUM_OF_MAPPERS)
+      ) que (
+       .clock(clock),
+       .reset_n(reset_n),
+       .request(req_rotate[NUM_OF_MAPPERS-1:0]),
+       .grant(que_out)
+       );
+   
+   
+   
+   
+  // COUNTER
+   always @(posedge clock)
+    begin
+      if(!reset_n || (counter == NUM_OF_MAPPERS-1 && grant_valid))
+        counter <= {bit_width{1'b0}};
+      else if (grant_valid)
+        counter <= counter+1;
+      else
+        counter <= counter;  
+    end
+   
+   /*
+  
+  // produce grant signal
+   always @(posedge clock)
+   begin
+      if (!reset_n)
+        grant = 0;
+      else
+        grant = req_rotate_back[(2*NUM_OF_MAPPERS)-1-:NUM_OF_MAPPERS];
+   end
+   */
+   
+   
+  // produce valid signal for grant
+ /*  always @(*)
+    if (!reset_n)
+      grant_valid = 1'b0;
+    else if (enable && (grant != {NUM_OF_MAPPERS{1'b0}}))
+      grant_valid = 1'b1;
+   */   
+  //assign grant_valid = (current_state == VALID) ? 1'b1 : 1'b0;
+   
+endmodule // arbiter
+
+
+/***
+// 
+// Module Name: priority_queue
+// Additional Comments:
+//   The module acts as a priority que using and grants
+//   the request with highest priority.
+//   The highest priority is the first bit starting from 0->N
+//   which has the value of 1'b1
+//   produce 1 for the highest priority request and 0 for the rest
+//   of the bits
+**/
+
+module priority_que #(
+		      parameter integer NUM_OF_MAPPERS = 4		      
+		      )(
+			clock,
+			reset_n,
+			request,
+			grant
+			
+			);
+   
+   //INPUTS
+   input 				clock,reset_n;
+   input [NUM_OF_MAPPERS-1:0] 		request;
+   
+   
+   //OUTPUTS
+   output reg [NUM_OF_MAPPERS-1:0] 	grant;
+   
+  
+
+   integer 				i;
+
+   // reg to hold the minimum index found
+   reg [NUM_OF_MAPPERS-1:0] min_index;
+   
+   
+   // ASSIGN GRANT 
+   always @(*)
+    begin
+     	min_index = NUM_OF_MAPPERS;
+     	
+      if (reset_n)
+        grant = {NUM_OF_MAPPERS{1'b0}};
+      
+      // for loop for finding the minimum index
+      for ( i = 0 ; i < NUM_OF_MAPPERS ; i = i + 1)
+      begin
+        
+        if (request[i] == 1'b1 && min_index > i)
+          begin
+            grant[i] = 1'b1;
+            min_index = i;  
+          end
+        else
+          grant[i] = 1'b0;
+      end
+       
+    end
+
+endmodule
+
+

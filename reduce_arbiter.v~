@@ -1,0 +1,223 @@
+`timescale 1ns / 1ps
+//////////////////////////////////////////////////////////////////////////////////
+// Company: 
+// Engineer: Ehsan Ghasemi
+// 
+// Create Date: 03/26/2015 17:55:53 PM
+// Design Name: Ehsan Ghasemi
+// Module Name: reduce arbiter
+// Project Name: 
+// Target Devices: 
+// Tool Versions: 
+// Description: 
+// 
+// Dependencies: 
+// 
+// Revision:
+// Revision 0.01 - File Created
+// Additional Comments:
+// 
+//    
+// Assumptions:
+// This module contains an instatiation of an arbiter
+// as well as an implementation of the mux which communicates
+// with partitioners, Value_in fifos, and one instance of a reducer
+// Revision:
+//
+// Apr 22:
+//   In order to meet timing, o_ack is registered and the registered value
+//    is used as the select line to the muxes
+// Apr 26:
+//   In order to meet timing, the o_KV_valid signal is registred to reduce the
+//   routing delay of this wire to inputs to the reducers
+// Apr 27:
+//   Changes from Apr 26 is reverted back because it would cause the core to not terminate
+//   it's execution
+//////////////////////////////////////////////////////////////////////////////////
+
+
+module reduce_arbiter #(
+			parameter integer NUM_OF_PARTITIONERS = 4,
+			parameter integer PRECISION = 16,
+			parameter integer DIMENSION = 2
+
+			)(
+			  clock,
+			  reset_n,
+			  //fifo_re, // this specifies that there is an idle mapper and an available data point
+			  i_request,
+			  i_reduce_en,
+			  i_value_data_in,
+			  i_key_data_in,
+
+			  o_acknowledged,  // the request is granted. This connects to the START port of the mappers
+			  //o_acknowledged, // specify the request is acknowledged
+			  o_value_data_out,
+			  o_key_data_out,
+			  o_KV_valid
+			  //fifo_empty
+
+			  );
+
+   // INPUTS
+   input 				  clock,reset_n; // enable is when !fifo_full
+   input [NUM_OF_PARTITIONERS-1:0] 	  i_request;
+   input 				  i_reduce_en; // the reduce core is idle and ready to accept new data
+   input [ (NUM_OF_PARTITIONERS*PRECISION*DIMENSION)-1:0] i_value_data_in;
+   input [ (NUM_OF_PARTITIONERS*16)-1:0] 		  i_key_data_in;
+   // input 		      fifo_re;
+   
+   //OUTPUTS
+   output [NUM_OF_PARTITIONERS-1:0] 			  o_acknowledged;
+   output [(PRECISION*DIMENSION)-1:0] 			  o_value_data_out;
+   output [15:0] 					  o_key_data_out;
+   output 						  o_KV_valid; // valid signal that indicates to reducer the <key,val> pair is valid
+   
+   
+   
+
+   //INTERNAL WIRES
+
+   wire [NUM_OF_PARTITIONERS-1:0] 			  grant;
+   wire 						  grant_valid;
+   
+   reg [NUM_OF_PARTITIONERS-1:0] 			  acknowledged_delay;
+   reg 							  grant_valid_delay;
+   
+
+
+   // ARBITER INSTANTIATION 	
+   arbiter #(
+	     .NUM_OF_MAPPERS (NUM_OF_PARTITIONERS)
+	     ) arb (
+		    .clock(clock),
+		    .reset_n(reset_n),
+		    .enable(i_reduce_en /*& reset_n*/),
+		    .request(i_request),
+		    .grant(grant),
+		    .grant_valid(grant_valid)
+		    );
+
+
+
+   // MUX INSTANTIATION FOR VALUE OUTPUT
+   mux # (
+	  .NUM_OF_PARTITIONERS(NUM_OF_PARTITIONERS),
+	  .PRECISION(PRECISION),
+	  .DIMENSION(DIMENSION)
+	  ) value_mux (
+		       
+		       //ack is used instead of grant since the correct
+		       //value takes one cycle to be read from value fifo
+		       .in(i_value_data_in),
+		       .sel(acknowledged_delay), 
+		       .out(o_value_data_out)
+		       );
+   
+   // MUX INSTATITAION FOR KEY OUTPUT
+   mux # (
+	  .NUM_OF_PARTITIONERS(NUM_OF_PARTITIONERS),
+	  .PRECISION(16),
+	  .DIMENSION(1)
+	  ) key_mux (
+		     .in( i_key_data_in),
+		     .sel(acknowledged_delay),
+		     .out(o_key_data_out)
+		     );
+   
+   assign o_acknowledged = (grant_valid) ? grant : 0; // setup grant signal to the requesting appropriate value in fifo
+
+
+   // THIS DELAY IS TO PIPELINE THE PATH BETWEEN THE ARBITER AND THE TWO MUXES
+   // THE ACK_DELAY SIGNAL REPLACE THE O_ACK AS THE SELECT LINE TO THE MUXES
+   always @(posedge clock)
+     begin
+	if(!reset_n)
+	  acknowledged_delay <= 0;
+	else
+	  acknowledged_delay <= o_acknowledged;
+	
+
+     end
+
+   always @(posedge clock)
+     begin
+	if(!reset_n)
+	  grant_valid_delay <= 0;
+	else
+	  grant_valid_delay <= grant_valid;
+	
+
+     end
+   
+   //assign o_KV_valid = (o_grant != 0);
+   //assign o_KV_valid = o_acknowledged !=0;
+   // SIGNAL THE REDUCER THAT A VALID SIGNAL IS AVAILABLE
+   assign o_KV_valid = grant_valid;//_delay;
+
+endmodule // data_controller
+
+
+
+
+
+//////////////////////////////////////////////////////////////////////////////////
+// 
+// Module Name: Mux
+//    
+// Additional Comments:
+//   This module is a parametrizable multiplexer 
+//////////////////////////////////////////////////////////////////////////////////
+
+
+
+module mux # (
+	      parameter integer NUM_OF_PARTITIONERS = 4,
+	      parameter integer PRECISION = 16 ,
+	      parameter integer DIMENSION = 2
+	      )
+   (
+    in,
+    sel,
+    out
+    );
+
+   // INPUTS
+   //input clock, reset_n;
+   input [(NUM_OF_PARTITIONERS*PRECISION*DIMENSION)-1:0] in;
+   input [NUM_OF_PARTITIONERS-1:0] 			 sel;
+   //OUTPUTS
+   output reg [(PRECISION*DIMENSION)-1:0] 		 out;
+   reg [NUM_OF_PARTITIONERS-1:0] 			 index;
+   // INTERNAL VARS
+   integer						 i;
+   
+   // COMBINATIONAL
+   always @ (*)
+     begin
+        index = 0;  
+	// DECODING AND MULTIPLEXING
+	for ( i = 0 ; i < NUM_OF_PARTITIONERS ; i = i + 1 )
+	  begin
+             
+             if ( sel[i] == 1'b1)
+               //out = in [((i+1)*PRECISION*DIMENSION)-1:0 ];
+               index = i;
+             
+             out = in >> (index*PRECISION*DIMENSION);
+	  end
+	
+     end
+   
+   // assign out = in >> (index*PRECISION*DIMENSION);
+   
+   /* for ( i = 0 ; i < NUM_OF_PARTITIONERS ; i = i + 1)
+    begin
+    assign out  = sel[i] ? in >> (i*PRECISION*DIMENSION) : 0;
+     end 
+    
+    */  
+   
+
+endmodule // mux
+
